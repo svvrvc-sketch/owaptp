@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import sqlite3
@@ -12,10 +13,13 @@ from aiogram.exceptions import TelegramBadRequest
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from aiohttp import web  # Render portini ushlab turish uchun shart
 
-BOT_TOKEN = "8855330752:AAGR9FIUA0Fz2Xu9enTJDO8gPCR7p5UNxBI"
-ADMIN_ID = 5111794979            
-MAIN_GROUP_ID = -5492317963     
+# --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
+BOT_TOKEN = os.getenv("8855330752:AAGR9FIUA0Fz2Xu9enTJDO8gPCR7p5UNxBI")
+ADMIN_ID = int(os.getenv("5111794979", "5111794979"))
+MAIN_GROUP_ID = int(os.getenv("-5492317963", "-5492317963"))
+PORT = int(os.getenv("PORT", "8080"))  # Render avtomatik port beradi
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -149,7 +153,6 @@ def get_user_history(telegram_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # 🌟 ADMIN barcha o'tkazmalarni ko'radi, oddiy xodim faqat o'zinikini
     if telegram_id == ADMIN_ID:
         cursor.execute("""
             SELECT h.amount, h.reason, h.timestamp, u1.full_name, u2.full_name, h.sender_id 
@@ -218,8 +221,6 @@ def get_admin_menu():
     builder.adjust(1)
     return builder.as_markup()
 
-
-# --- BOT MAQSADI MATNI (YANGILANDI) ---
 def get_purpose_text():
     return (
         f"🚀 **Ushbu bot nima maqsadda ochilgan?**\n"
@@ -233,6 +234,7 @@ def get_purpose_text():
         f"4️⃣ Kunlik `🎰 Kunlik Omadli Coin` tugmasini bosib, balansingizni bepul oshirib borishingiz mumkin.\n\n"
         f"🤝 _Keling, bir-birimizni qo'llab-quvvatlab, jamoaviy ruhni yuqori ko'taramiz!_"
     )
+
 
 # --- HANDLERLAR ---
 
@@ -251,7 +253,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     elif user[4] == 0:
         await message.answer("⏳ **Sizning soʻrovingiz hamon admin tasdigʻini kutmoqda.**")
     else:
-        # ⚡️ JUDA QISQA gap bilan kutib olish matni
         await message.answer(text=f"👋 Xush kelibsiz, *{user[1]}*!\n\nKerakli bo'limni tanlang:", parse_mode="Markdown", reply_markup=get_inline_menu(message.from_user.id))
 
 @dp.message(RegistrationState.waiting_for_name)
@@ -450,7 +451,6 @@ async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
     else:
         await callback.message.edit_text(text=f"👋 Xush kelibsiz, *{user[1]}*!\n\nKerakli bo'limni tanlang:", parse_mode="Markdown", reply_markup=get_inline_menu(callback.from_user.id))
 
-# 🌟 BOT MAQSADI ALOHIDA OYNADA
 @dp.callback_query(F.data == "menu_purpose")
 async def show_purpose(callback: types.CallbackQuery):
     await callback.answer()
@@ -478,7 +478,7 @@ async def show_top_5(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=get_back_button())
 
 
-# --- 🔄 O'TKAZMALAR TARIXI (HISTORY) ---
+# --- O'TKAZMALAR TARIXI ---
 @dp.callback_query(F.data == "menu_history")
 async def show_history(callback: types.CallbackQuery):
     await callback.answer()
@@ -499,13 +499,13 @@ async def show_history(callback: types.CallbackQuery):
                 if s_id == callback.from_user.id:
                     text += f"📤 *Yuborildi:* {amount} coin ➡️ *{receiver}*\n"
                 else:
-                    text += f"📥 *Olingan:* {amount} coin ⬅ trim(*{sender}*)\n"
+                    text += f"📥 *Olingan:* {amount} coin ⬅️ *{sender}*\n"
                 text += f"🎯 *Sabab:* _{reason}_\n📅 _{timestamp}_\n---------------------\n"
                 
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=get_back_button())
 
 
-# --- 🎰 KUNLIK OMADLI COIN (DAILY SPIN) ---
+# --- KUNLIK OMADLI COIN ---
 @dp.callback_query(F.data == "menu_spin")
 async def daily_spin(callback: types.CallbackQuery):
     await callback.answer()
@@ -687,11 +687,35 @@ async def monthly_cron_job():
         logger.error(f"Oylik reset bildirishnomasida xatolik: {e}")
 
 
+# --- 🌐 WEB SERVER (RENDER PORTI UCHUN) ---
+async def handle_web(request):
+    return web.Response(text="Bot muvaffaqiyatli ishlamoqda!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_web)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Web server {PORT}-portda ishga tushdi.")
+
+
+# --- ASOSIY ISHGA TUSHIRISH ---
 async def main():
     init_db()
+    
+    # 1. Cron shchedulerni yoqish
     scheduler = AsyncIOScheduler()
     scheduler.add_job(monthly_cron_job, CronTrigger(day=1, hour=0, minute=0))
     scheduler.start()
+    
+    # 2. Render o'chib qolmasligi uchun dummy serverni parallel yoqish
+    await start_web_server()
+    
+    # 3. Bot Pollingni boshlash
+    if ADMIN_ID:
+        add_admin_automatically(ADMIN_ID)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
