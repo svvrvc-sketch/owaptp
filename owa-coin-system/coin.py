@@ -17,7 +17,6 @@ import psycopg  # Supabase (PostgreSQL) uchun asinxron drayver
 from psycopg.rows import tuple_row
 
 # --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
-# --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
 BOT_TOKEN = "8855330752:AAGR9FIUA0Fz2Xu9enTJD08gPCR7p5UNXBI"
 ADMIN_ID = 5111794979
 MAIN_GROUP_ID = -549231963
@@ -62,12 +61,12 @@ async def get_all_approved_users(exclude_id=None):
         async with conn.cursor() as cursor:
             if exclude_id:
                 await cursor.execute(
-                    "SELECT telegram_id, full_name FROM users WHERE is_approved = 1 AND telegram_id != %s AND telegram_id != %s", 
+                    "SELECT telegram_id, full_name FROM users WHERE is_approved = TRUE AND telegram_id != %s AND telegram_id != %s", 
                     (exclude_id, ADMIN_ID)
                 )
             else:
                 await cursor.execute(
-                    "SELECT telegram_id, full_name FROM users WHERE is_approved = 1 AND telegram_id != %s", 
+                    "SELECT telegram_id, full_name FROM users WHERE is_approved = TRUE AND telegram_id != %s", 
                     (ADMIN_ID,)
                 )
             return await cursor.fetchall()
@@ -89,7 +88,7 @@ async def add_pending_user(telegram_id, full_name):
     async with await get_db_connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, %s, 0) ON CONFLICT (telegram_id) DO NOTHING", 
+                "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, %s, FALSE) ON CONFLICT (telegram_id) DO NOTHING", 
                 (telegram_id, full_name)
             )
             await conn.commit()
@@ -98,7 +97,7 @@ async def add_admin_automatically(telegram_id):
     async with await get_db_connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, 'Asosiy Admin', 1) ON CONFLICT (telegram_id) DO UPDATE SET is_approved = 1", 
+                "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, 'Asosiy Admin', TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_approved = TRUE", 
                 (telegram_id,)
             )
             await conn.commit()
@@ -106,7 +105,7 @@ async def add_admin_automatically(telegram_id):
 async def approve_user_db(telegram_id):
     async with await get_db_connection() as conn:
         async with conn.cursor() as cursor:
-            await cursor.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = %s", (telegram_id,))
+            await cursor.execute("UPDATE users SET is_approved = TRUE WHERE telegram_id = %s", (telegram_id,))
             await conn.commit()
 
 async def reject_user_db(telegram_id):
@@ -131,7 +130,7 @@ async def get_top_5():
     async with await get_db_connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "SELECT full_name, earned_balance FROM users WHERE is_approved = 1 AND telegram_id != %s ORDER BY earned_balance DESC LIMIT 5", 
+                "SELECT full_name, earned_balance FROM users WHERE is_approved = TRUE AND telegram_id != %s ORDER BY earned_balance DESC LIMIT 5", 
                 (ADMIN_ID,)
             )
             return await cursor.fetchall()
@@ -161,7 +160,7 @@ async def get_user_history(telegram_id):
 async def distribute_monthly_coins():
     async with await get_db_connection() as conn:
         async with conn.cursor() as cursor:
-            await cursor.execute("UPDATE users SET give_balance = 50.0 WHERE is_approved = 1")
+            await cursor.execute("UPDATE users SET give_balance = 50.0 WHERE is_approved = TRUE")
             await conn.commit()
 
 async def reset_all_data():
@@ -230,7 +229,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if not user:
         await message.answer("🚀 Roʻyxatdan oʻtish uchun **Ism va familiyangizni kiriting:**\n(Masalan: *Asilbek Olimov*)", parse_mode="Markdown")
         await state.set_state(RegistrationState.waiting_for_name)
-    elif user[4] == 0:
+    elif user[4] is False:
         await message.answer("⏳ **Sizning soʻrovingiz hamon admin tasdigʻini kutmoqda.**")
     else:
         await message.answer(text=f"👋 Xush kelibsiz, *{user[1]}*!\n\nKerakli bo'limni tanlang:", parse_mode="Markdown", reply_markup=get_inline_menu(message.from_user.id))
