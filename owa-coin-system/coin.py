@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import sqlite3
 import random
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
@@ -13,13 +12,16 @@ from aiogram.exceptions import TelegramBadRequest
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from aiohttp import web  # Render portini ushlab turish uchun shart
+from aiohttp import web
+import psycopg  # Supabase (PostgreSQL) uchun asinxron drayver
+from psycopg.rows import tuple_row
 
 # --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
 BOT_TOKEN = os.getenv("8855330752:AAGR9FIUA0Fz2Xu9enTJDO8gPCR7p5UNxBI")
-ADMIN_ID = int(os.getenv("5111794979", "5111794979"))
-MAIN_GROUP_ID = int(os.getenv("-5492317963", "-5492317963"))
-PORT = int(os.getenv("PORT", "8080"))  # Render avtomatik port beradi
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5111794979"))
+MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID", "-5492317963"))
+PORT = int(os.getenv("PORT", "8080"))
+DATABASE_URL = os.getenv("DATABASE_URL")  # Supabase URI ulanishi
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,157 +42,133 @@ class AdminManageState(StatesGroup):
     waiting_for_bonus = State()       
     waiting_for_deduct = State()      
 
-DB_NAME = "owa_inline_wallet.db"
+# --- SUPABASE (POSTGRESQL) ULANISH FUNKSIYALARI ---
+async def get_db_connection():
+    return await psycopg.AsyncConnection.connect(DATABASE_URL, row_factory=tuple_row)
 
-# --- BAZA FUNKSIYALARI ---
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        telegram_id INTEGER PRIMARY KEY,
-        full_name TEXT,
-        give_balance REAL DEFAULT 50.0,
-        earned_balance REAL DEFAULT 0.0,
-        is_approved INTEGER DEFAULT 0,
-        last_spin_date TEXT DEFAULT NULL
-    )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sender_id INTEGER,
-        receiver_id INTEGER,
-        amount REAL,
-        reason TEXT,
-        timestamp TEXT
-    )
-    """)
-    conn.commit()
-    conn.close()
+async def get_user(telegram_id):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT telegram_id, full_name, give_balance, earned_balance, is_approved, last_spin_date FROM users WHERE telegram_id = %s", 
+                (telegram_id,)
+            )
+            return await cursor.fetchone()
 
-def get_user(telegram_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id, full_name, give_balance, earned_balance, is_approved, last_spin_date FROM users WHERE telegram_id = ?", (telegram_id,))
-    user = cursor.fetchone()
-    conn.close()
-    return user
+async def get_all_approved_users(exclude_id=None):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            if exclude_id:
+                await cursor.execute(
+                    "SELECT telegram_id, full_name FROM users WHERE is_approved = 1 AND telegram_id != %s AND telegram_id != %s", 
+                    (exclude_id, ADMIN_ID)
+                )
+            else:
+                await cursor.execute(
+                    "SELECT telegram_id, full_name FROM users WHERE is_approved = 1 AND telegram_id != %s", 
+                    (ADMIN_ID,)
+                )
+            return await cursor.fetchall()
 
-def get_all_approved_users(exclude_id=None):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    if exclude_id:
-        cursor.execute("SELECT telegram_id, full_name FROM users WHERE is_approved = 1 AND telegram_id != ? AND telegram_id != ?", (exclude_id, ADMIN_ID))
-    else:
-        cursor.execute("SELECT telegram_id, full_name FROM users WHERE is_approved = 1 AND telegram_id != ?", (ADMIN_ID,))
-    users = cursor.fetchall()
-    conn.close()
-    return users
+async def update_user_balance(telegram_id, column, amount, operation="+"):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            query = f"UPDATE users SET {column} = {column} {operation} %s WHERE telegram_id = %s"
+            await cursor.execute(query, (amount, telegram_id))
+            await conn.commit()
 
-def update_user_balance(telegram_id, column, amount, operation="+"):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(f"UPDATE users SET {column} = {column} {operation} ? WHERE telegram_id = ?", (amount, telegram_id))
-    conn.commit()
-    conn.close()
+async def update_spin_date(telegram_id, date_str):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("UPDATE users SET last_spin_date = %s WHERE telegram_id = %s", (date_str, telegram_id))
+            await conn.commit()
 
-def update_spin_date(telegram_id, date_str):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET last_spin_date = ? WHERE telegram_id = ?", (date_str, telegram_id))
-    conn.commit()
-    conn.close()
+async def add_pending_user(telegram_id, full_name):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, %s, 0) ON CONFLICT (telegram_id) DO NOTHING", 
+                (telegram_id, full_name)
+            )
+            await conn.commit()
 
-def add_pending_user(telegram_id, full_name):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (telegram_id, full_name, is_approved) VALUES (?, ?, 0)", (telegram_id, full_name))
-    conn.commit()
-    conn.close()
+async def add_admin_automatically(telegram_id):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, 'Asosiy Admin', 1) ON CONFLICT (telegram_id) DO UPDATE SET is_approved = 1", 
+                (telegram_id,)
+            )
+            await conn.commit()
 
-def add_admin_automatically(telegram_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (telegram_id, full_name, is_approved) VALUES (?, 'Asosiy Admin', 1)", (telegram_id,))
-    cursor.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = ?", (telegram_id,))
-    conn.commit()
-    conn.close()
+async def approve_user_db(telegram_id):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = %s", (telegram_id,))
+            await conn.commit()
 
-def approve_user_db(telegram_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = ?", (telegram_id,))
-    conn.commit()
-    conn.close()
+async def reject_user_db(telegram_id):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("DELETE FROM users WHERE telegram_id = %s", (telegram_id,))
+            await conn.commit()
 
-def reject_user_db(telegram_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
-    conn.commit()
-    conn.close()
-
-def execute_transfer(sender_id, receiver_id, amount, reason):
+async def execute_transfer(sender_id, receiver_id, amount, reason):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET give_balance = give_balance - ? WHERE telegram_id = ?", (amount, sender_id))
-    cursor.execute("UPDATE users SET earned_balance = earned_balance + ? WHERE telegram_id = ?", (amount, receiver_id))
-    cursor.execute("INSERT INTO history (sender_id, receiver_id, amount, reason, timestamp) VALUES (?, ?, ?, ?, ?)", (sender_id, receiver_id, amount, reason, now_str))
-    conn.commit()
-    conn.close()
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("UPDATE users SET give_balance = give_balance - %s WHERE telegram_id = %s", (amount, sender_id))
+            await cursor.execute("UPDATE users SET earned_balance = earned_balance + %s WHERE telegram_id = %s", (amount, receiver_id))
+            await cursor.execute(
+                "INSERT INTO history (sender_id, receiver_id, amount, reason, timestamp) VALUES (%s, %s, %s, %s, %s)", 
+                (sender_id, receiver_id, amount, reason, now_str)
+            )
+            await conn.commit()
 
-def get_top_5():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT full_name, earned_balance FROM users WHERE is_approved = 1 AND telegram_id != ? ORDER BY earned_balance DESC LIMIT 5", (ADMIN_ID,))
-    top = cursor.fetchall()
-    conn.close()
-    return top
+async def get_top_5():
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "SELECT full_name, earned_balance FROM users WHERE is_approved = 1 AND telegram_id != %s ORDER BY earned_balance DESC LIMIT 5", 
+                (ADMIN_ID,)
+            )
+            return await cursor.fetchall()
 
-def get_user_history(telegram_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    if telegram_id == ADMIN_ID:
-        cursor.execute("""
-            SELECT h.amount, h.reason, h.timestamp, u1.full_name, u2.full_name, h.sender_id 
-            FROM history h
-            JOIN users u1 ON h.sender_id = u1.telegram_id
-            JOIN users u2 ON h.receiver_id = u2.telegram_id
-            ORDER BY h.id DESC LIMIT 20
-        """)
-    else:
-        cursor.execute("""
-            SELECT h.amount, h.reason, h.timestamp, u1.full_name, u2.full_name, h.sender_id 
-            FROM history h
-            JOIN users u1 ON h.sender_id = u1.telegram_id
-            JOIN users u2 ON h.receiver_id = u2.telegram_id
-            WHERE h.sender_id = ? OR h.receiver_id = ?
-            ORDER BY h.id DESC LIMIT 10
-        """, (telegram_id, telegram_id))
-        
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+async def get_user_history(telegram_id):
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            if telegram_id == ADMIN_ID:
+                await cursor.execute("""
+                    SELECT h.amount, h.reason, h.timestamp, u1.full_name, u2.full_name, h.sender_id 
+                    FROM history h
+                    JOIN users u1 ON h.sender_id = u1.telegram_id
+                    JOIN users u2 ON h.receiver_id = u2.telegram_id
+                    ORDER BY h.id DESC LIMIT 20
+                """)
+            else:
+                await cursor.execute("""
+                    SELECT h.amount, h.reason, h.timestamp, u1.full_name, u2.full_name, h.sender_id 
+                    FROM history h
+                    JOIN users u1 ON h.sender_id = u1.telegram_id
+                    JOIN users u2 ON h.receiver_id = u2.telegram_id
+                    WHERE h.sender_id = %s OR h.receiver_id = %s
+                    ORDER BY h.id DESC LIMIT 10
+                """, (telegram_id, telegram_id))
+            return await cursor.fetchall()
 
-def distribute_monthly_coins():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET give_balance = 50.0 WHERE is_approved = 1")
-    conn.commit()
-    conn.close()
+async def distribute_monthly_coins():
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("UPDATE users SET give_balance = 50.0 WHERE is_approved = 1")
+            await conn.commit()
 
-def reset_all_data():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS users")
-    cursor.execute("DROP TABLE IF EXISTS history")
-    conn.commit()
-    conn.close()
-    init_db()
-    add_admin_automatically(ADMIN_ID)
+async def reset_all_data():
+    async with await get_db_connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("TRUNCATE TABLE history RESTART IDENTITY CASCADE")
+            await cursor.execute("DELETE FROM users WHERE telegram_id != %s", (ADMIN_ID,))
+            await cursor.execute("UPDATE users SET give_balance = 50.0, earned_balance = 0.0 WHERE telegram_id = %s", (ADMIN_ID,))
+            await conn.commit()
 
 
 # --- TUGMALAR ---
@@ -242,11 +220,11 @@ def get_purpose_text():
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     if message.from_user.id == ADMIN_ID:
-        add_admin_automatically(ADMIN_ID)
+        await add_admin_automatically(ADMIN_ID)
         await message.answer("👋 Xush kelibsiz, *Asosiy Admin*!\n\nQuyidagi menyudan foydalanishingiz mumkin:", parse_mode="Markdown", reply_markup=get_inline_menu(message.from_user.id))
         return
 
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     if not user:
         await message.answer("🚀 Roʻyxatdan oʻtish uchun **Ism va familiyangizni kiriting:**\n(Masalan: *Asilbek Olimov*)", parse_mode="Markdown")
         await state.set_state(RegistrationState.waiting_for_name)
@@ -262,7 +240,7 @@ async def process_name(message: types.Message, state: FSMContext):
         await message.answer("❌ Ism juda qisqa. Qaytadan kiriting:")
         return
         
-    add_pending_user(message.from_user.id, full_name)
+    await add_pending_user(message.from_user.id, full_name)
     await state.clear()
     await message.answer("⏳ **Soʻrovingiz adminga yuborildi. Tasdiqlangach botdan to'liq foydalanishingiz mumkin.**")
     
@@ -292,7 +270,7 @@ async def show_admin_panel(callback: types.CallbackQuery):
 async def admin_manage_users(callback: types.CallbackQuery):
     await callback.answer()
     if callback.from_user.id != ADMIN_ID: return
-    users = get_all_approved_users()  
+    users = await get_all_approved_users()  
     builder = InlineKeyboardBuilder()
     if not users:
         await callback.message.edit_text("👤 Hozircha tasdiqlangan xodimlar yo'q.", reply_markup=get_admin_menu())
@@ -309,7 +287,7 @@ async def admin_user_profile(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     await state.clear()
     user_id = int(callback.data.split(":")[1])
-    user = get_user(user_id)
+    user = await get_user(user_id)
     if not user:
         await callback.message.edit_text("❌ Foydalanuvchi topilmadi.", reply_markup=get_admin_menu())
         return
@@ -342,8 +320,8 @@ async def admin_coin_add_save(message: types.Message, state: FSMContext):
     amount = float(message.text)
     data = await state.get_data()
     user_id = data['target_user_id']
-    update_user_balance(user_id, "earned_balance", amount, operation="+")
-    user = get_user(user_id)
+    await update_user_balance(user_id, "earned_balance", amount, operation="+")
+    user = await get_user(user_id)
     await state.clear()
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Xodim profiliga qaytish", callback_data=f"admin_user_profile:{user_id}")
@@ -368,8 +346,8 @@ async def admin_coin_sub_save(message: types.Message, state: FSMContext):
     amount = float(message.text)
     data = await state.get_data()
     user_id = data['target_user_id']
-    update_user_balance(user_id, "earned_balance", amount, operation="-")
-    user = get_user(user_id)
+    await update_user_balance(user_id, "earned_balance", amount, operation="-")
+    user = await get_user(user_id)
     await state.clear()
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Xodim profiliga qaytish", callback_data=f"admin_user_profile:{user_id}")
@@ -382,9 +360,9 @@ async def admin_user_ban(callback: types.CallbackQuery):
     await callback.answer()
     if callback.from_user.id != ADMIN_ID: return
     user_id = int(callback.data.split(":")[1])
-    user = get_user(user_id)
+    user = await get_user(user_id)
     if user:
-        reject_user_db(user_id)
+        await reject_user_db(user_id)
         await callback.message.edit_text(f"❌ *{user[1]}* muvaffaqiyatli tizimdan o'chirildi.", parse_mode="Markdown", reply_markup=get_admin_menu())
         try: await bot.send_message(user_id, "❌ Siz botdan admin tomonidan chetlashtirildingiz.")
         except Exception: pass
@@ -393,9 +371,9 @@ async def admin_user_ban(callback: types.CallbackQuery):
 async def admin_approve(callback: types.CallbackQuery):
     await callback.answer()
     user_id = int(callback.data.split(":")[1])
-    user = get_user(user_id)
+    user = await get_user(user_id)
     if user:
-        approve_user_db(user_id)
+        await approve_user_db(user_id)
         try: await callback.message.delete()
         except TelegramBadRequest: pass
         await bot.send_message(chat_id=ADMIN_ID, text=f"✅ *{user[1]}* tasdiqlandi va tizimga qo'shildi!", parse_mode="Markdown", reply_markup=get_inline_menu(ADMIN_ID))
@@ -406,9 +384,9 @@ async def admin_approve(callback: types.CallbackQuery):
 async def admin_reject(callback: types.CallbackQuery):
     await callback.answer()
     user_id = int(callback.data.split(":")[1])
-    user = get_user(user_id)
+    user = await get_user(user_id)
     if user:
-        reject_user_db(user_id)
+        await reject_user_db(user_id)
         try: await callback.message.delete()
         except TelegramBadRequest: pass
         await bot.send_message(chat_id=ADMIN_ID, text=f"❌ *{user[1]}* so'rovi rad etildi va o'chirildi.", parse_mode="Markdown", reply_markup=get_inline_menu(ADMIN_ID))
@@ -419,7 +397,7 @@ async def admin_reject(callback: types.CallbackQuery):
 async def admin_distribute_coins(callback: types.CallbackQuery):
     await callback.answer()
     if callback.from_user.id != ADMIN_ID: return
-    distribute_monthly_coins()
+    await distribute_monthly_coins()
     await callback.message.edit_text("💰 Balanslar muvaffaqiyatli yangilandi (Hammaga 50 berish coini).", reply_markup=get_back_button())
 
 @dp.callback_query(F.data == "admin_reset_confirm")
@@ -436,7 +414,7 @@ async def admin_reset_confirm(callback: types.CallbackQuery):
 async def admin_reset_execute(callback: types.CallbackQuery):
     await callback.answer()
     if callback.from_user.id != ADMIN_ID: return
-    reset_all_data()
+    await reset_all_data()
     await callback.message.edit_text("🚨 **Bot muvaffaqiyatli reset qilindi!**", reply_markup=get_back_button())
 
 
@@ -445,7 +423,7 @@ async def admin_reset_execute(callback: types.CallbackQuery):
 async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     if callback.from_user.id == ADMIN_ID:
         await callback.message.edit_text("👋 Xush kelibsiz, *Asosiy Admin*!\n\nQuyidagi menyudan foydalanishingiz mumkin:", parse_mode="Markdown", reply_markup=get_inline_menu(callback.from_user.id))
     else:
@@ -459,7 +437,7 @@ async def show_purpose(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "menu_balance")
 async def show_balance_inline(callback: types.CallbackQuery):
     await callback.answer()
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     await callback.message.edit_text(f"📊 **Balans:**\n🎁 Berish uchun: {user[2]} coin\n💰 Yiqqan: {user[3]} coin", parse_mode="Markdown", reply_markup=get_back_button())
 
 @dp.callback_query(F.data == "menu_id")
@@ -470,7 +448,7 @@ async def show_id_inline(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "menu_top")
 async def show_top_5(callback: types.CallbackQuery):
     await callback.answer()
-    top_list = get_top_5()
+    top_list = await get_top_5()
     text = "🏆 **TOP-5 Reyting (Faqat xodimlar):**\n\n"
     if not top_list: text += "_Hali bo'sh_"
     else:
@@ -482,7 +460,7 @@ async def show_top_5(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "menu_history")
 async def show_history(callback: types.CallbackQuery):
     await callback.answer()
-    rows = get_user_history(callback.from_user.id)
+    rows = await get_user_history(callback.from_user.id)
     
     if callback.from_user.id == ADMIN_ID:
         text = "📋 **Tizimdagi barcha global o'tkazmalar (Admin ko'rinishi):**\n\n"
@@ -509,7 +487,7 @@ async def show_history(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "menu_spin")
 async def daily_spin(callback: types.CallbackQuery):
     await callback.answer()
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     if user and user[5] == today_str:
@@ -517,8 +495,8 @@ async def daily_spin(callback: types.CallbackQuery):
         return
         
     bonus = random.choice([0.5, 1.0])
-    update_user_balance(callback.from_user.id, "give_balance", bonus, operation="+")
-    update_spin_date(callback.from_user.id, today_str)
+    await update_user_balance(callback.from_user.id, "give_balance", bonus, operation="+")
+    await update_spin_date(callback.from_user.id, today_str)
     
     await callback.message.edit_text(
         f"🎰 **Omadli g'ildirak aylandi!**\n\n🎉 Tabriklaymiz! Sizning berish balansigizga **+{bonus} coin** qo'shildi.\n"
@@ -532,7 +510,7 @@ async def daily_spin(callback: types.CallbackQuery):
 async def start_transfer_inline(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    users = get_all_approved_users(callback.from_user.id) 
+    users = await get_all_approved_users(callback.from_user.id) 
     builder = InlineKeyboardBuilder()
     if not users:
         await callback.message.edit_text("👤 **Botda hozircha boshqa tasdiqlangan xodimlar mavjud emas.**", reply_markup=get_back_button())
@@ -547,7 +525,7 @@ async def start_transfer_inline(callback: types.CallbackQuery, state: FSMContext
 async def process_selected_user(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     receiver_id = int(callback.data.split(":")[1])
-    receiver = get_user(receiver_id)
+    receiver = await get_user(receiver_id)
     if not receiver:
         await callback.message.edit_text("❌ Xodim topilmadi.", reply_markup=get_back_button())
         return
@@ -600,7 +578,7 @@ async def process_level_selection(callback: types.CallbackQuery, state: FSMConte
 async def process_amount_selection(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     amount = float(callback.data.split(":")[1])
-    user_data = get_user(callback.from_user.id)
+    user_data = await get_user(callback.from_user.id)
     if user_data[2] < amount:
         await callback.message.edit_text(f"❌ Balansingizda mablag' yetarli emas. Sizda: {user_data[2]} coin bor.", reply_markup=get_back_button())
         await state.clear()
@@ -648,9 +626,9 @@ async def complete_transfer_inline(callback: types.CallbackQuery, state: FSMCont
     await callback.answer()
     if callback.data == "confirm_yes":
         data = await state.get_data()
-        sender_name = get_user(callback.from_user.id)[1]
+        sender_name = (await get_user(callback.from_user.id))[1]
         
-        execute_transfer(callback.from_user.id, data['receiver_id'], data['amount'], data['reason'])
+        await execute_transfer(callback.from_user.id, data['receiver_id'], data['amount'], data['reason'])
         await callback.message.edit_text("✅ Muvaffaqiyatli bajarildi!", reply_markup=get_back_button())
         
         try:
@@ -676,7 +654,7 @@ async def complete_transfer_inline(callback: types.CallbackQuery, state: FSMCont
 
 # --- OYLIK AVTOMATIK RESET ---
 async def monthly_cron_job():
-    distribute_monthly_coins()
+    await distribute_monthly_coins()
     try:
         await bot.send_message(
             chat_id=MAIN_GROUP_ID, 
@@ -703,19 +681,17 @@ async def start_web_server():
 
 # --- ASOSIY ISHGA TUSHIRISH ---
 async def main():
-    init_db()
-    
     # 1. Cron shchedulerni yoqish
     scheduler = AsyncIOScheduler()
     scheduler.add_job(monthly_cron_job, CronTrigger(day=1, hour=0, minute=0))
     scheduler.start()
     
-    # 2. Render o'chib qolmasligi uchun dummy serverni parallel yoqish
+    # 2. Dummy serverni ishga tushirish (Render uchun)
     await start_web_server()
     
     # 3. Bot Pollingni boshlash
     if ADMIN_ID:
-        add_admin_automatically(ADMIN_ID)
+        await add_admin_automatically(ADMIN_ID)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
