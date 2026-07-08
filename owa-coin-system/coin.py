@@ -17,9 +17,11 @@ import psycopg  # Supabase (PostgreSQL) uchun asinxron drayver
 from psycopg.rows import tuple_row
 
 # --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
-BOT_TOKEN = os.getenv("8855330752:AAGR9FIUA0Fz2Xu9enTJDO8gPCR7p5UNxBI")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "5111794979"))
-MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID", "-5492317963"))
+# --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
+BOT_TOKEN = "8855330752:AAGR9FIUA0Fz2Xu9enTJD08gPCR7p5UNXBI"
+ADMIN_ID = 5111794979
+MAIN_GROUP_ID = -549231963
+
 PORT = int(os.getenv("PORT", "8080"))
 DATABASE_URL = os.getenv("DATABASE_URL")  # Supabase URI ulanishi
 
