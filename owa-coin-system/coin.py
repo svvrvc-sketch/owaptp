@@ -17,7 +17,7 @@ import psycopg  # Supabase (PostgreSQL) uchun asinxron drayver
 from psycopg.rows import tuple_row
 
 # --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
-BOT_TOKEN = "8855330752:AAGR9FIUA0Fz2Xu9enTJD08gPCR7p5UNXBI"
+BOT_TOKEN = "8855330752:AAGJ1GB8knm8Ar04J5hjPdj8caZlyLOjPC8"
 ADMIN_ID = 5111794979
 MAIN_GROUP_ID = -549231963
 
