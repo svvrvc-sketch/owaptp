@@ -17,9 +17,9 @@ import psycopg
 from psycopg.rows import dict_row  
 
 # --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
-BOT_TOKEN = "8855330752:AAGJ1GB8knm8Ar04J5hjPdj8caZlyLOjPC8"
+BOT_TOKEN = "8855330752:AAGR9FIUA0Fz2Xu9enTJD08gPCR7p5UNXBI"
 ADMIN_ID = 5111794979
-MAIN_GROUP_ID = -5492317963
+MAIN_GROUP_ID = -549231963
 
 PORT = int(os.getenv("PORT", "8080"))
 DATABASE_URL = os.getenv("DATABASE_URL")  
@@ -45,7 +45,8 @@ class AdminManageState(StatesGroup):
 
 # --- SUPABASE (POSTGRESQL) ULANISH FUNKSIYALARI ---
 async def get_db_connection():
-    return await psycopg.AsyncConnection.connect(DATABASE_URL, row_factory=dict_row)
+    # connect_timeout=5 orqali baza sekinlashganda bot butunlay qotib qolishining oldini olamiz
+    return await psycopg.AsyncConnection.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=5)
 
 async def get_user(telegram_id):
     try:
@@ -279,10 +280,71 @@ async def process_name(message: types.Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Adminga xabar yuborib bo'lmadi: {e}")
 
-# --- BACK TO MAIN (ORQAGA QAYTISH) ENX XAVFSIZ HOLATDA ---
+
+# --- 🛠️ TASDIQLASH VA RAD ETISH HANDLERLARI (TUBDAN OPTIMALLASHTIRILDI) ---
+
+@dp.callback_query(F.data.startswith("approve:"))
+async def admin_approve(callback: types.CallbackQuery):
+    # Birinchi navbatda Telegram serveridagi yuklanish soatini o'chiramiz
+    await callback.answer("Tasdiqlanmoqda, kuting...")
+    if callback.from_user.id != ADMIN_ID: return
+    
+    try:
+        user_id = int(callback.data.split(":")[1])
+        user = await get_user(user_id)
+        
+        if user:
+            await approve_user_db(user_id)
+            try: await callback.message.delete()
+            except Exception: pass
+            
+            await bot.send_message(
+                chat_id=ADMIN_ID, 
+                text=f"✅ *{user['full_name']}* muvaffaqiyatli tasdiqlandi va tizimga qo'shildi!", 
+                parse_mode="Markdown",
+                reply_markup=get_inline_menu(ADMIN_ID)
+            )
+            try: await bot.send_message(user_id, "🎉 Admin sizni tasdiqladi! Qaytadan /start bosing.")
+            except Exception: pass
+        else:
+            await callback.message.reply("❌ Xatolik: Foydalanuvchi ma'lumotlar bazasidan topilmadi.")
+    except Exception as e:
+        logger.error(f"Xatolik admin_approve: {e}")
+        await callback.message.reply("⚠️ Ma'lumotlar bazasi aloqasi sekinlashdi. Birozdan so'ng qayta urinib ko'ring.")
+
+@dp.callback_query(F.data.startswith("reject:"))
+async def admin_reject(callback: types.CallbackQuery):
+    await callback.answer("Rad etilmoqda...")
+    if callback.from_user.id != ADMIN_ID: return
+    
+    try:
+        user_id = int(callback.data.split(":")[1])
+        user = await get_user(user_id)
+        
+        if user:
+            await reject_user_db(user_id)
+            try: await callback.message.delete()
+            except Exception: pass
+            
+            await bot.send_message(
+                chat_id=ADMIN_ID, 
+                text=f"❌ *{user['full_name']}* so'rovi rad etildi va o'chirildi.", 
+                parse_mode="Markdown",
+                reply_markup=get_inline_menu(ADMIN_ID)
+            )
+            try: await bot.send_message(user_id, "❌ Afsuski, sizning so'rovingiz admin tomonidan rad etildi.")
+            except Exception: pass
+        else:
+            await callback.message.reply("❌ Foydalanuvchi topilmadi.")
+    except Exception as e:
+        logger.error(f"Xatolik admin_reject: {e}")
+        await callback.message.reply("⚠️ Tarmoq xatoligi. Qayta urinib ko'ring.")
+
+
+# --- ORQAGA / BOSH MENYUGA QAYTISH ---
 @dp.callback_query(F.data == "menu_main")
 async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer() # Eng birinchi navbatda tugmani bo'shatamiz
+    await callback.answer() 
     try:
         await state.clear()
         user_name = "Xodim"
@@ -296,7 +358,7 @@ async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
         else:
             await callback.message.edit_text(text=f"👋 Xush kelibsiz, *{user_name}*!\n\nKerakli bo'limni tanlang:", parse_mode="Markdown", reply_markup=get_inline_menu(callback.from_user.id))
     except Exception as e:
-        logger.error(f"menu_main tugmasida xatolik: {e}")
+        logger.error(f"menu_main xatolik: {e}")
 
 # --- ADMIN PANEL ---
 @dp.callback_query(F.data == "admin_panel")
@@ -418,36 +480,6 @@ async def admin_user_ban(callback: types.CallbackQuery):
             except Exception: pass
     except Exception as e: logger.error(e)
 
-@dp.callback_query(F.data.startswith("approve:"))
-async def admin_approve(callback: types.CallbackQuery):
-    await callback.answer()
-    try:
-        user_id = int(callback.data.split(":")[1])
-        user = await get_user(user_id)
-        if user:
-            await approve_user_db(user_id)
-            try: await callback.message.delete()
-            except TelegramBadRequest: pass
-            await bot.send_message(chat_id=ADMIN_ID, text=f"✅ *{user['full_name']}* tasdiqlandi va tizimga qo'shildi!", parse_mode="Markdown", reply_markup=get_inline_menu(ADMIN_ID))
-            try: await bot.send_message(user_id, "🎉 Admin sizni tasdiqladi! Qaytadan /start bosing.")
-            except Exception: pass
-    except Exception as e: logger.error(e)
-
-@dp.callback_query(F.data.startswith("reject:"))
-async def admin_reject(callback: types.CallbackQuery):
-    await callback.answer()
-    try:
-        user_id = int(callback.data.split(":")[1])
-        user = await get_user(user_id)
-        if user:
-            await reject_user_db(user_id)
-            try: await callback.message.delete()
-            except TelegramBadRequest: pass
-            await bot.send_message(chat_id=ADMIN_ID, text=f"❌ *{user['full_name']}* so'rovi rad etildi va o'chirildi.", parse_mode="Markdown", reply_markup=get_inline_menu(ADMIN_ID))
-            try: await bot.send_message(user_id, "❌ So'rovingiz rad etildi.")
-            except Exception: pass
-    except Exception as e: logger.error(e)
-
 @dp.callback_query(F.data == "admin_distribute")
 async def admin_distribute_coins(callback: types.CallbackQuery):
     await callback.answer()
@@ -479,7 +511,7 @@ async def admin_reset_execute(callback: types.CallbackQuery):
     except Exception as e: logger.error(e)
 
 
-# --- MENYULAR ---
+# --- FOYDALANUVCHI MENYULARI ---
 @dp.callback_query(F.data == "menu_purpose")
 async def show_purpose(callback: types.CallbackQuery):
     await callback.answer()
