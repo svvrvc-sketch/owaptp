@@ -14,7 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from aiohttp import web
 import psycopg  
-from psycopg.rows import dict_row  # Indeks o'rniga nom bilan ishlash uchun dict_row ga o'tamiz
+from psycopg.rows import dict_row  
 
 # --- ATROF-MUHIT O'ZGARUVCHILARI (ENV) ---
 BOT_TOKEN = "8855330752:AAGJ1GB8knm8Ar04J5hjPdj8caZlyLOjPC8"
@@ -45,32 +45,39 @@ class AdminManageState(StatesGroup):
 
 # --- SUPABASE (POSTGRESQL) ULANISH FUNKSIYALARI ---
 async def get_db_connection():
-    # dict_row yordamida natijalarni user['is_approved'] ko'rinishida olamiz (xato qilmaslik uchun)
     return await psycopg.AsyncConnection.connect(DATABASE_URL, row_factory=dict_row)
 
 async def get_user(telegram_id):
-    async with await get_db_connection() as conn:
-        async with conn.cursor() as cursor:
-            await cursor.execute(
-                "SELECT telegram_id, full_name, give_balance, earned_balance, is_approved, last_spin_date FROM users WHERE telegram_id = %s", 
-                (telegram_id,)
-            )
-            return await cursor.fetchone()
+    try:
+        async with await get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT telegram_id, full_name, give_balance, earned_balance, is_approved, last_spin_date FROM users WHERE telegram_id = %s", 
+                    (telegram_id,)
+                )
+                return await cursor.fetchone()
+    except Exception as e:
+        logger.error(f"get_user xatolik: {e}")
+        return None
 
 async def get_all_approved_users(exclude_id=None):
-    async with await get_db_connection() as conn:
-        async with conn.cursor() as cursor:
-            if exclude_id:
-                await cursor.execute(
-                    "SELECT telegram_id, full_name FROM users WHERE is_approved = TRUE AND telegram_id != %s AND telegram_id != %s", 
-                    (exclude_id, ADMIN_ID)
-                )
-            else:
-                await cursor.execute(
-                    "SELECT telegram_id, full_name FROM users WHERE is_approved = TRUE AND telegram_id != %s", 
-                    (ADMIN_ID,)
-                )
-            return await cursor.fetchall()
+    try:
+        async with await get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                if exclude_id:
+                    await cursor.execute(
+                        "SELECT telegram_id, full_name FROM users WHERE is_approved = TRUE AND telegram_id != %s AND telegram_id != %s", 
+                        (exclude_id, ADMIN_ID)
+                    )
+                else:
+                    await cursor.execute(
+                        "SELECT telegram_id, full_name FROM users WHERE is_approved = TRUE AND telegram_id != %s", 
+                        (ADMIN_ID,)
+                    )
+                return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"get_all_approved_users xatolik: {e}")
+        return []
 
 async def update_user_balance(telegram_id, column, amount, operation="+"):
     async with await get_db_connection() as conn:
@@ -95,13 +102,16 @@ async def add_pending_user(telegram_id, full_name):
             await conn.commit()
 
 async def add_admin_automatically(telegram_id):
-    async with await get_db_connection() as conn:
-        async with conn.cursor() as cursor:
-            await cursor.execute(
-                "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, 'Asosiy Admin', TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_approved = TRUE", 
-                (telegram_id,)
-            )
-            await conn.commit()
+    try:
+        async with await get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "INSERT INTO users (telegram_id, full_name, is_approved) VALUES (%s, 'Asosiy Admin', TRUE) ON CONFLICT (telegram_id) DO UPDATE SET is_approved = TRUE", 
+                    (telegram_id,)
+                )
+                await conn.commit()
+    except Exception as e:
+        logger.error(f"add_admin_automatically xatolik: {e}")
 
 async def approve_user_db(telegram_id):
     async with await get_db_connection() as conn:
@@ -128,35 +138,43 @@ async def execute_transfer(sender_id, receiver_id, amount, reason):
             await conn.commit()
 
 async def get_top_5():
-    async with await get_db_connection() as conn:
-        async with conn.cursor() as cursor:
-            await cursor.execute(
-                "SELECT full_name, earned_balance FROM users WHERE is_approved = TRUE AND telegram_id != %s ORDER BY earned_balance DESC LIMIT 5", 
-                (ADMIN_ID,)
-            )
-            return await cursor.fetchall()
+    try:
+        async with await get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT full_name, earned_balance FROM users WHERE is_approved = TRUE AND telegram_id != %s ORDER BY earned_balance DESC LIMIT 5", 
+                    (ADMIN_ID,)
+                )
+                return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"get_top_5 xatolik: {e}")
+        return []
 
 async def get_user_history(telegram_id):
-    async with await get_db_connection() as conn:
-        async with conn.cursor() as cursor:
-            if telegram_id == ADMIN_ID:
-                await cursor.execute("""
-                    SELECT h.amount, h.reason, h.timestamp, u1.full_name as sender, u2.full_name as receiver, h.sender_id 
-                    FROM history h
-                    JOIN users u1 ON h.sender_id = u1.telegram_id
-                    JOIN users u2 ON h.receiver_id = u2.telegram_id
-                    ORDER BY h.id DESC LIMIT 20
-                """)
-            else:
-                await cursor.execute("""
-                    SELECT h.amount, h.reason, h.timestamp, u1.full_name as sender, u2.full_name as receiver, h.sender_id 
-                    FROM history h
-                    JOIN users u1 ON h.sender_id = u1.telegram_id
-                    JOIN users u2 ON h.receiver_id = u2.telegram_id
-                    WHERE h.sender_id = %s OR h.receiver_id = %s
-                    ORDER BY h.id DESC LIMIT 10
-                """, (telegram_id, telegram_id))
-            return await cursor.fetchall()
+    try:
+        async with await get_db_connection() as conn:
+            async with conn.cursor() as cursor:
+                if telegram_id == ADMIN_ID:
+                    await cursor.execute("""
+                        SELECT h.amount, h.reason, h.timestamp, u1.full_name as sender, u2.full_name as receiver, h.sender_id 
+                        FROM history h
+                        JOIN users u1 ON h.sender_id = u1.telegram_id
+                        JOIN users u2 ON h.receiver_id = u2.telegram_id
+                        ORDER BY h.id DESC LIMIT 20
+                    """)
+                else:
+                    await cursor.execute("""
+                        SELECT h.amount, h.reason, h.timestamp, u1.full_name as sender, u2.full_name as receiver, h.sender_id 
+                        FROM history h
+                        JOIN users u1 ON h.sender_id = u1.telegram_id
+                        JOIN users u2 ON h.receiver_id = u2.telegram_id
+                        WHERE h.sender_id = %s OR h.receiver_id = %s
+                        ORDER BY h.id DESC LIMIT 10
+                    """, (telegram_id, telegram_id))
+                return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"get_user_history xatolik: {e}")
+        return []
 
 async def distribute_monthly_coins():
     async with await get_db_connection() as conn:
@@ -261,21 +279,39 @@ async def process_name(message: types.Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Adminga xabar yuborib bo'lmadi: {e}")
 
+# --- BACK TO MAIN (ORQAGA QAYTISH) ENX XAVFSIZ HOLATDA ---
+@dp.callback_query(F.data == "menu_main")
+async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer() # Eng birinchi navbatda tugmani bo'shatamiz
+    try:
+        await state.clear()
+        user_name = "Xodim"
+        if callback.from_user.id != ADMIN_ID:
+            user = await get_user(callback.from_user.id)
+            if user and 'full_name' in user:
+                user_name = user['full_name']
+        
+        if callback.from_user.id == ADMIN_ID:
+            await callback.message.edit_text("👋 Xush kelibsiz, *Asosiy Admin*!\n\nQuyidagi menyudan foydalanishingiz mumkin:", parse_mode="Markdown", reply_markup=get_inline_menu(callback.from_user.id))
+        else:
+            await callback.message.edit_text(text=f"👋 Xush kelibsiz, *{user_name}*!\n\nKerakli bo'limni tanlang:", parse_mode="Markdown", reply_markup=get_inline_menu(callback.from_user.id))
+    except Exception as e:
+        logger.error(f"menu_main tugmasida xatolik: {e}")
+
 # --- ADMIN PANEL ---
 @dp.callback_query(F.data == "admin_panel")
 async def show_admin_panel(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id != ADMIN_ID: return
     try:
-        await callback.answer()
-        if callback.from_user.id != ADMIN_ID: return
         await callback.message.edit_text("⚙️ **Admin Panel boshqaruv oynasi:**\n\nKerakli amalni tanlang 👇", reply_markup=get_admin_menu())
-    except Exception as e:
-        logger.error(f"Xatolik admin_panel: {e}")
+    except Exception as e: logger.error(e)
 
 @dp.callback_query(F.data == "admin_manage_users")
 async def admin_manage_users(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id != ADMIN_ID: return
     try:
-        await callback.answer()
-        if callback.from_user.id != ADMIN_ID: return
         users = await get_all_approved_users()  
         builder = InlineKeyboardBuilder()
         if not users:
@@ -286,14 +322,13 @@ async def admin_manage_users(callback: types.CallbackQuery):
         builder.button(text="⬅️ Orqaga", callback_data="admin_panel")
         builder.adjust(1)
         await callback.message.edit_text("⚙️ **Boshqarmoqchi bo'lgan xodimingizni tanlang:**", reply_markup=builder.as_markup())
-    except Exception as e:
-        logger.error(f"Xatolik admin_manage_users: {e}")
+    except Exception as e: logger.error(e)
 
 @dp.callback_query(F.data.startswith("admin_user_profile:"))
 async def admin_user_profile(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.from_user.id != ADMIN_ID: return
     try:
-        await callback.answer()
-        if callback.from_user.id != ADMIN_ID: return
         await state.clear()
         user_id = int(callback.data.split(":")[1])
         user = await get_user(user_id)
@@ -311,13 +346,12 @@ async def admin_user_profile(callback: types.CallbackQuery, state: FSMContext):
         builder.button(text="⬅️ Xodimlar ro'yxati", callback_data="admin_manage_users")
         builder.adjust(2, 1, 1)
         await callback.message.edit_text(text, reply_markup=builder.as_markup())
-    except Exception as e:
-        logger.error(f"Xatolik admin_user_profile: {e}")
+    except Exception as e: logger.error(e)
 
 @dp.callback_query(F.data.startswith("admin_coin_add:"))
 async def admin_coin_add_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     try:
-        await callback.answer()
         user_id = int(callback.data.split(":")[1])
         await state.update_data(target_user_id=user_id, menu_msg_id=callback.message.message_id)
         await callback.message.edit_text("💰 Ushbu xodimning **Yiqqan balansiga** qancha coin qo'shmoqchisiz?\n\nFaqat musbat son kiriting:")
@@ -344,8 +378,8 @@ async def admin_coin_add_save(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("admin_coin_sub:"))
 async def admin_coin_sub_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     try:
-        await callback.answer()
         user_id = int(callback.data.split(":")[1])
         await state.update_data(target_user_id=user_id, menu_msg_id=callback.message.message_id)
         await callback.message.edit_text("⚠️ Ushbu xodimning **Yiqqan balansidan** qancha coin ayirmoqchisiz?\n\nFaqat musbat son kiriting:")
@@ -372,9 +406,9 @@ async def admin_coin_sub_save(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("admin_user_ban:"))
 async def admin_user_ban(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id != ADMIN_ID: return
     try:
-        await callback.answer()
-        if callback.from_user.id != ADMIN_ID: return
         user_id = int(callback.data.split(":")[1])
         user = await get_user(user_id)
         if user:
@@ -386,8 +420,8 @@ async def admin_user_ban(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("approve:"))
 async def admin_approve(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        await callback.answer()
         user_id = int(callback.data.split(":")[1])
         user = await get_user(user_id)
         if user:
@@ -401,8 +435,8 @@ async def admin_approve(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject:"))
 async def admin_reject(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        await callback.answer()
         user_id = int(callback.data.split(":")[1])
         user = await get_user(user_id)
         if user:
@@ -416,18 +450,18 @@ async def admin_reject(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_distribute")
 async def admin_distribute_coins(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id != ADMIN_ID: return
     try:
-        await callback.answer()
-        if callback.from_user.id != ADMIN_ID: return
         await distribute_monthly_coins()
         await callback.message.edit_text("💰 Balanslar muvaffaqiyatli yangilandi (Hammaga 50 berish coini).", reply_markup=get_back_button())
     except Exception as e: logger.error(e)
 
 @dp.callback_query(F.data == "admin_reset_confirm")
 async def admin_reset_confirm(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id != ADMIN_ID: return
     try:
-        await callback.answer()
-        if callback.from_user.id != ADMIN_ID: return
         builder = InlineKeyboardBuilder()
         builder.button(text="💥 HA, BARCHASINI O'CHIRISH", callback_data="admin_reset_execute")
         builder.button(text="❌ Yo'q, bekor qilish", callback_data="admin_panel")
@@ -437,46 +471,36 @@ async def admin_reset_confirm(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_reset_execute")
 async def admin_reset_execute(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id != ADMIN_ID: return
     try:
-        await callback.answer()
-        if callback.from_user.id != ADMIN_ID: return
         await reset_all_data()
         await callback.message.edit_text("🚨 **Bot muvaffaqiyatli reset qilindi!**", reply_markup=get_back_button())
     except Exception as e: logger.error(e)
 
 
-# --- STANDARD MENYULAR ---
-@dp.callback_query(F.data == "menu_main")
-async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        await callback.answer()
-        await state.clear()
-        user = await get_user(callback.from_user.id)
-        if callback.from_user.id == ADMIN_ID:
-            await callback.message.edit_text("👋 Xush kelibsiz, *Asosiy Admin*!\n\nQuyidagi menyudan foydalanishingiz mumkin:", parse_mode="Markdown", reply_markup=get_inline_menu(callback.from_user.id))
-        else:
-            await callback.message.edit_text(text=f"👋 Xush kelibsiz, *{user['full_name']}*!\n\nKerakli bo'limni tanlang:", parse_mode="Markdown", reply_markup=get_inline_menu(callback.from_user.id))
-    except Exception as e: logger.error(e)
-
+# --- MENYULAR ---
 @dp.callback_query(F.data == "menu_purpose")
 async def show_purpose(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        await callback.answer()
         await callback.message.edit_text(text=get_purpose_text(), parse_mode="Markdown", reply_markup=get_back_button())
     except Exception as e: logger.error(e)
 
 @dp.callback_query(F.data == "menu_balance")
 async def show_balance_inline(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        await callback.answer()
         user = await get_user(callback.from_user.id)
-        await callback.message.edit_text(f"📊 **Balans:**\n🎁 Berish uchun: {user['give_balance']} coin\n💰 Yiqqan: {user['earned_balance']} coin", parse_mode="Markdown", reply_markup=get_back_button())
+        give_b = user['give_balance'] if user else 0
+        earn_b = user['earned_balance'] if user else 0
+        await callback.message.edit_text(f"📊 **Balans:**\n🎁 Berish uchun: {give_b} coin\n💰 Yiqqan: {earn_b} coin", parse_mode="Markdown", reply_markup=get_back_button())
     except Exception as e: logger.error(e)
 
 @dp.callback_query(F.data == "menu_top")
 async def show_top_5(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        await callback.answer()
         top_list = await get_top_5()
         text = "🏆 **TOP-5 Reyting (Faqat xodimlar):**\n\n"
         if not top_list: text += "_Hali bo'sh_"
@@ -489,10 +513,9 @@ async def show_top_5(callback: types.CallbackQuery):
 # --- O'TKAZMALAR TARIXI ---
 @dp.callback_query(F.data == "menu_history")
 async def show_history(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        await callback.answer()
         rows = await get_user_history(callback.from_user.id)
-        
         if callback.from_user.id == ADMIN_ID:
             text = "📋 **Tizimdagi barcha global o'tkazmalar (Admin ko'rinishi):**\n\n"
         else:
@@ -518,8 +541,8 @@ async def show_history(callback: types.CallbackQuery):
 # --- KUNLIK OMADLI COIN ---
 @dp.callback_query(F.data == "menu_spin")
 async def daily_spin(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        await callback.answer()
         user = await get_user(callback.from_user.id)
         today_str = datetime.now().strftime("%Y-%m-%d")
         
@@ -542,8 +565,8 @@ async def daily_spin(callback: types.CallbackQuery):
 # --- COIN O'TKAZISH TIZIMI ---
 @dp.callback_query(F.data == "menu_transfer")
 async def start_transfer_inline(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     try:
-        await callback.answer()
         await state.clear()
         users = await get_all_approved_users(callback.from_user.id) 
         builder = InlineKeyboardBuilder()
@@ -559,8 +582,8 @@ async def start_transfer_inline(callback: types.CallbackQuery, state: FSMContext
 
 @dp.callback_query(F.data.startswith("select_user:"))
 async def process_selected_user(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     try:
-        await callback.answer()
         receiver_id = int(callback.data.split(":")[1])
         receiver = await get_user(receiver_id)
         if not receiver:
@@ -587,8 +610,8 @@ async def process_selected_user(callback: types.CallbackQuery, state: FSMContext
 
 @dp.callback_query(F.data.startswith("level:"))
 async def process_level_selection(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     try:
-        await callback.answer()
         level = int(callback.data.split(":")[1])
         await state.update_data(selected_level=level)
         data = await state.get_data()
@@ -616,12 +639,13 @@ async def process_level_selection(callback: types.CallbackQuery, state: FSMConte
 
 @dp.callback_query(F.data.startswith("amt:"))
 async def process_amount_selection(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     try:
-        await callback.answer()
         amount = float(callback.data.split(":")[1])
         user_data = await get_user(callback.from_user.id)
-        if user_data['give_balance'] < amount:
-            await callback.message.edit_text(f"❌ Balansingizda mablag' yetarli emas. Sizda: {user_data['give_balance']} coin bor.", reply_markup=get_back_button())
+        if not user_data or user_data['give_balance'] < amount:
+            current_bal = user_data['give_balance'] if user_data else 0
+            await callback.message.edit_text(f"❌ Balansingizda mablag' yetarli emas. Sizda: {current_bal} coin bor.", reply_markup=get_back_button())
             await state.clear()
             return
             
@@ -665,12 +689,12 @@ async def process_reason_text(message: types.Message, state: FSMContext):
 
 @dp.callback_query(TransferState.confirm_transfer)
 async def complete_transfer_inline(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
     try:
-        await callback.answer()
         if callback.data == "confirm_yes":
             data = await state.get_data()
             sender_user = await get_user(callback.from_user.id)
-            sender_name = sender_user['full_name']
+            sender_name = sender_user['full_name'] if sender_user else "Xodim"
             
             await execute_transfer(callback.from_user.id, data['receiver_id'], data['amount'], data['reason'])
             await callback.message.edit_text("✅ Muvaffaqiyatli bajarildi!", reply_markup=get_back_button())
